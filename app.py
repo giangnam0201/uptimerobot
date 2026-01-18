@@ -50,6 +50,7 @@ class WebsiteMonitor:
         self.consecutive_failures = 0
         self.failure_threshold = 2  # Alert after 2 consecutive failures
         self.status_history = []  # Keep last 50 status changes
+        self.last_check_succeeded = None  # Track immediate check result
         
     def add_status_record(self, status: bool, response_time: float = 0, error: str = ""):
         """Add status change to history"""
@@ -152,20 +153,26 @@ class UptimeBot(commands.Bot):
             
             if is_up:
                 await self.handle_website_up(monitor, response_time)
+                monitor.last_check_succeeded = True
             else:
                 await self.handle_website_down(
                     monitor, 
                     "HTTP {}".format(response.status_code)
                 )
+                monitor.last_check_succeeded = False
                 
         except requests.exceptions.Timeout:
             await self.handle_website_down(monitor, "Timeout")
+            monitor.last_check_succeeded = False
         except requests.exceptions.ConnectionError:
             await self.handle_website_down(monitor, "Connection Error")
+            monitor.last_check_succeeded = False
         except requests.exceptions.RequestException as e:
             await self.handle_website_down(monitor, str(e))
+            monitor.last_check_succeeded = False
         except Exception as e:
             await self.handle_website_down(monitor, "Unexpected Error: {}".format(str(e)))
+            monitor.last_check_succeeded = False
             
     async def handle_website_up(self, monitor: WebsiteMonitor, response_time: float):
         """Handle website coming back up or staying up"""
@@ -324,9 +331,12 @@ async def monitor_command(
             ephemeral=True
         )
         
+        # Perform the check and wait for result
         await bot.check_single_website(monitor)
         
-        if monitor.is_up:
+        # Check the ACTUAL result of the immediate test (not the monitor.is_up flag)
+        # last_check_succeeded will be True/False based on the immediate check
+        if monitor.last_check_succeeded:
             await interaction.followup.send(
                 "✅ Monitor added! **{}** is responding correctly.\\n"
                 "Checks every {} seconds with {}s timeout.".format(
