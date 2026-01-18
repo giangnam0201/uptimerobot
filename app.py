@@ -21,11 +21,11 @@ st.write("The bot is running in the background.")
 for key, value in st.secrets.items():
     os.environ[key] = str(value)
 
-# --- 3. YOUR CODE (FIXED) ---
+# --- 3. YOUR CODE (AUTO-REFRESH DASHBOARD) ---
 RAW_CODE = '''
 # uptime_monitor_bot.py
 import discord
-from discord import app_commands
+from discord import app_commands, ui, ButtonStyle
 from discord.ext import tasks, commands
 import requests
 import asyncio
@@ -50,7 +50,7 @@ class WebsiteMonitor:
         self.consecutive_failures = 0
         self.failure_threshold = 2  # Alert after 2 consecutive failures
         self.status_history = []  # Keep last 50 status changes
-        self.last_check_succeeded = None  # Track immediate check result
+        self.last_check_succeeded = None
         
     def add_status_record(self, status: bool, response_time: float = 0, error: str = ""):
         """Add status change to history"""
@@ -70,6 +70,23 @@ class WebsiteMonitor:
             return 0
         recent = self.response_times[-10:]
         return sum(recent) / len(recent)
+        
+    def get_uptime_percentage(self, hours: int = 24) -> float:
+        """Calculate uptime percentage over last N hours"""
+        if not self.status_history:
+            return 100.0
+            
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+        recent_records = [
+            r for r in self.status_history 
+            if datetime.fromisoformat(r["timestamp"]) > cutoff_time
+        ]
+        
+        if not recent_records:
+            return 100.0
+            
+        up_count = sum(1 for r in recent_records if r["status"])
+        return (up_count / len(recent_records)) * 100
 
 class UptimeBot(commands.Bot):
     def __init__(self):
@@ -79,11 +96,14 @@ class UptimeBot(commands.Bot):
         
         self.monitors: Dict[str, WebsiteMonitor] = {}
         self.alert_role = "@everyone"  # Can be configured
+        self.dashboard_messages = {}  # Store dashboard message IDs per guild
         self.load_monitors()
+        self.load_dashboard_messages()
         
     async def setup_hook(self):
         """Initialize the bot"""
         self.check_websites.start()
+        self.update_dashboard.start()  # Start dashboard auto-refresh
         await self.tree.sync()
         print("✅ Bot ready! Monitoring {} websites".format(len(self.monitors)))
         
@@ -118,6 +138,139 @@ class UptimeBot(commands.Bot):
         with open("monitors.json", "w") as f:
             json.dump(data, f, indent=2)
             
+    def load_dashboard_messages(self):
+        """Load dashboard message IDs"""
+        try:
+            with open("dashboard_messages.json", "r") as f:
+                self.dashboard_messages = json.load(f)
+        except FileNotFoundError:
+            self.dashboard_messages = {}
+            
+    def save_dashboard_messages(self):
+        """Save dashboard message IDs"""
+        with open("dashboard_messages.json", "w") as f:
+            json.dump(self.dashboard_messages, f, indent=2)
+            
+    # --- AUTO-REFRESH DASHBOARD (Every 5 seconds) ---
+    @tasks.loop(seconds=5)
+    async def update_dashboard(self):
+        """Auto-refresh dashboard every 5 seconds"""
+        if not self.dashboard_messages:
+            return
+            
+        for guild_id_str, message_data in self.dashboard_messages.items():
+            guild_id = int(guild_id_str)
+            channel_id = message_data["channel_id"]
+            message_id = message_data["message_id"]
+            
+            guild = self.get_guild(guild_id)
+            if not guild:
+                continue
+                
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                continue
+                
+            try:
+                message = await channel.fetch_message(message_id)
+                embed = self.generate_dashboard_embed()
+                view = DashboardView(bot)  # Add interactive buttons
+                await message.edit(embed=embed, view=view)
+            except discord.NotFound:
+                # Message was deleted, remove from tracking
+                del self.dashboard_messages[guild_id_str]
+                self.save_dashboard_messages()
+            except discord.Forbidden:
+                pass
+            except Exception as e:
+                print("Dashboard update error: {}".format(str(e)))
+                
+    @update_dashboard.before_loop
+    async def before_dashboard_update(self):
+        """Wait for bot to be ready before starting dashboard updates"""
+        await self.wait_until_ready()
+        
+    def generate_dashboard_embed(self) -> discord.Embed:
+        """Generate the dashboard embed with real-time metrics"""
+        total_sites = len(self.monitors)
+        
+        if total_sites == 0:
+            embed = discord.Embed(
+                title="🎯 Uptime Monitoring Dashboard",
+                description="No websites are being monitored.",
+                color=discord.Color.orange(),
+                timestamp=datetime.now()
+            )
+            embed.add_field(
+                name="Get Started",
+                value="Use `/monitor add` to add your first website!",
+                inline=False
+            )
+            return embed
+            
+        up_sites = sum(1 for m in self.monitors.values() if m.is_up)
+        down_sites = total_sites - up_sites
+        
+        # Calculate overall system health
+        health_color = discord.Color.green() if down_sites == 0 else discord.Color.red()
+        uptime_pct = (up_sites / total_sites) * 100
+        
+        embed = discord.Embed(
+            title="🎯 Uptime Monitoring Dashboard",
+            description="Auto-refreshing every 5 seconds | {} websites monitored".format(total_sites),
+            color=health_color,
+            timestamp=datetime.now()
+        )
+        
+        # System Overview
+        embed.add_field(
+            name="📊 System Overview",
+            value=(
+                "🟢 Online: **{}**\\n"
+                "🔴 Offline: **{}**\\n"
+                "📈 Health: **{:.1f}%**"
+            ).format(up_sites, down_sites, uptime_pct),
+            inline=False
+        )
+        
+        # Individual Site Details
+        sites_text = ""
+        for name, monitor in sorted(self.monitors.items()):
+            status_emoji = "🟢" if monitor.is_up else "🔴"
+            avg_time = monitor.get_avg_response_time()
+            uptime_24h = monitor.get_uptime_percentage(24)
+            
+            # Status indicator with response time
+            sites_text += "{} **{}** - {:.0f}ms | Uptime: {:.1f}%\\n".format(
+                status_emoji, name, avg_time, uptime_24h
+            )
+            
+            # Current status info
+            if monitor.is_up:
+                if monitor.last_up_time:
+                    uptime_duration = time.time() - monitor.last_up_time
+                    sites_text += "   └─ Up for {}\\n".format(
+                        str(timedelta(seconds=int(uptime_duration)))
+                    )
+            else:
+                if monitor.downtime_start:
+                    downtime_duration = time.time() - monitor.downtime_start
+                    sites_text += "   └─ Down for {}\\n".format(
+                        str(timedelta(seconds=int(downtime_duration)))
+                    )
+                    
+        if sites_text:
+            embed.add_field(
+                name="📡 Monitored Websites",
+                value=sites_text,
+                inline=False
+            )
+            
+        # Footer with legend
+        embed.set_footer(text="🟢 = Online | 🔴 = Offline | ms = Response time | Uptime = Last 24h")
+        
+        return embed
+        
     @tasks.loop(seconds=30)
     async def check_websites(self):
         """Main monitoring loop"""
@@ -264,6 +417,33 @@ class UptimeBot(commands.Bot):
                         pass
                     break  # Only send to first valid channel per guild
 
+# --- INTERACTIVE BUTTONS FOR DASHBOARD ---
+class DashboardView(ui.View):
+    def __init__(self, bot_instance):
+        super().__init__(timeout=None)  # Persistent view
+        self.bot = bot_instance
+        
+    @ui.button(label="🔄 Refresh Now", style=ButtonStyle.primary, custom_id="refresh_dashboard")
+    async def refresh_button(self, interaction: discord.Interaction, button: ui.Button):
+        """Manually refresh dashboard"""
+        embed = self.bot.generate_dashboard_embed()
+        await interaction.response.edit_message(embed=embed)
+        
+    @ui.button(label="⏸️ Pause Monitoring", style=ButtonStyle.red, custom_id="pause_monitoring")
+    async def pause_button(self, interaction: discord.Interaction, button: ui.Button):
+        """Toggle monitoring on/off"""
+        if self.bot.check_websites.is_running():
+            self.bot.check_websites.stop()
+            button.label = "▶️ Resume Monitoring"
+            button.style = ButtonStyle.green
+        else:
+            self.bot.check_websites.start()
+            button.label = "⏸️ Pause Monitoring"
+            button.style = ButtonStyle.red
+            
+        embed = self.bot.generate_dashboard_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
 # Slash Commands
 bot = UptimeBot()
 
@@ -331,11 +511,8 @@ async def monitor_command(
             ephemeral=True
         )
         
-        # Perform the check and wait for result
         await bot.check_single_website(monitor)
         
-        # Check the ACTUAL result of the immediate test (not the monitor.is_up flag)
-        # last_check_succeeded will be True/False based on the immediate check
         if monitor.last_check_succeeded:
             await interaction.followup.send(
                 "✅ Monitor added! **{}** is responding correctly.\\n"
@@ -438,6 +615,14 @@ async def monitor_command(
             inline=True
         )
         
+        # Uptime percentage
+        uptime_pct = monitor.get_uptime_percentage(24)
+        embed.add_field(
+            name="24h Uptime", 
+            value="{:.1f}%".format(uptime_pct), 
+            inline=True
+        )
+        
         if monitor.is_up and monitor.last_up_time:
             embed.add_field(
                 name="Uptime Duration", 
@@ -464,51 +649,29 @@ async def monitor_command(
         await interaction.response.send_message(embed=embed, ephemeral=True)
         
     elif action == "dashboard":
-        # Create comprehensive dashboard
-        total_sites = len(bot.monitors)
-        if total_sites == 0:
-            await interaction.response.send_message(
-                "📭 No monitors to display. Add one with `/monitor add`!", 
-                ephemeral=True
-            )
-            return
-            
-        up_sites = sum(1 for m in bot.monitors.values() if m.is_up)
-        down_sites = total_sites - up_sites
+        # Create dashboard in current channel
+        embed = bot.generate_dashboard_embed()
+        view = DashboardView(bot)
         
-        embed = discord.Embed(
-            title="🎯 Uptime Monitoring Dashboard",
-            description="Monitoring **{}** websites".format(total_sites),
-            color=discord.Color.green() if down_sites == 0 else discord.Color.red(),
-            timestamp=datetime.now()
+        await interaction.response.send_message(
+            "📊 Creating dashboard...", 
+            ephemeral=True
         )
         
-        embed.add_field(
-            name="Overview",
-            value="🟢 Online: **{}**\\n🔴 Offline: **{}**".format(up_sites, down_sites),
-            inline=False
-        )
+        message = await interaction.channel.send(embed=embed, view=view)
         
-        # List all sites with status
-        sites_text = ""
-        for name, monitor in bot.monitors.items():
-            status_emoji = "🟢" if monitor.is_up else "🔴"
-            avg_time = monitor.get_avg_response_time()
-            sites_text += "{} **{}** - {:.0f}ms\\n".format(status_emoji, name, avg_time)
+        # Store dashboard message ID for auto-refresh
+        if interaction.guild:
+            bot.dashboard_messages[str(interaction.guild.id)] = {
+                "channel_id": interaction.channel.id,
+                "message_id": message.id
+            }
+            bot.save_dashboard_messages()
             
-        if sites_text:
-            embed.add_field(name="All Monitors", value=sites_text, inline=False)
-            
-        # Calculate overall uptime (simplified)
-        if total_sites > 0:
-            uptime_pct = (up_sites / total_sites) * 100
-            embed.add_field(
-                name="System Health",
-                value="**{:.1f}%** of services are online".format(uptime_pct),
-                inline=False
-            )
-            
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(
+            "✅ Dashboard created and will auto-refresh every 5 seconds!",
+            ephemeral=True
+        )
 
 @bot.tree.command(name="stop_monitor", description="Stop all monitoring")
 async def stop_monitor(interaction: discord.Interaction):
@@ -534,6 +697,22 @@ async def start_monitor(interaction: discord.Interaction):
         "✅ Monitoring started!", 
         ephemeral=True
     )
+
+@bot.tree.command(name="cleardashboard", description="Remove the auto-refreshing dashboard")
+async def clear_dashboard(interaction: discord.Interaction):
+    """Remove dashboard tracking"""
+    if str(interaction.guild.id) in bot.dashboard_messages:
+        del bot.dashboard_messages[str(interaction.guild.id)]
+        bot.save_dashboard_messages()
+        await interaction.response.send_message(
+            "✅ Dashboard auto-refresh stopped. Delete the message manually.", 
+            ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            "❌ No active dashboard found for this server.", 
+            ephemeral=True
+        )
 
 # Run the bot
 if __name__ == "__main__":
