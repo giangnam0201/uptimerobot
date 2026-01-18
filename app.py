@@ -4,9 +4,8 @@ import os
 import asyncio
 import sys
 import time
+
 # --- 1. THE "ULTIMATE" GLOBAL LOCK ---
-# We check if our custom 'bot_lock' exists in the system modules.
-# This prevents the bot from starting twice, even if the page is refreshed.
 if "bot_lock" not in sys.modules:
     sys.modules["bot_lock"] = True
     FIRST_RUN = True
@@ -18,11 +17,11 @@ st.set_page_config(page_title="Bot Server", page_icon="🚀")
 st.title("Service Status: Online ✅")
 st.write("The bot is running in the background.")
 
-# BRIDGE: Injects Streamlit Secrets into the environment
+# BRIDGE: Injects Streamlit Secrets into environment
 for key, value in st.secrets.items():
     os.environ[key] = str(value)
 
-# --- 3. YOUR CODE ---
+# --- 3. YOUR CODE (FIXED) ---
 RAW_CODE = '''
 # uptime_monitor_bot.py
 import discord
@@ -55,10 +54,10 @@ class WebsiteMonitor:
     def add_status_record(self, status: bool, response_time: float = 0, error: str = ""):
         """Add status change to history"""
         record = {
-            'timestamp': datetime.now().isoformat(),
-            'status': status,
-            'response_time': response_time,
-            'error': error
+            "timestamp": datetime.now().isoformat(),
+            "status": status,
+            "response_time": response_time,
+            "error": error
         }
         self.status_history.append(record)
         if len(self.status_history) > 50:
@@ -75,7 +74,7 @@ class UptimeBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
-        super().__init__(command_prefix='!', intents=intents)
+        super().__init__(command_prefix="!", intents=intents)
         
         self.monitors: Dict[str, WebsiteMonitor] = {}
         self.alert_role = "@everyone"  # Can be configured
@@ -85,21 +84,21 @@ class UptimeBot(commands.Bot):
         """Initialize the bot"""
         self.check_websites.start()
         await self.tree.sync()
-        print(f"✅ Bot ready! Monitoring {len(self.monitors)} websites")
+        print("✅ Bot ready! Monitoring {} websites".format(len(self.monitors)))
         
     def load_monitors(self):
         """Load monitors from JSON file"""
         try:
-            with open('monitors.json', 'r') as f:
+            with open("monitors.json", "r") as f:
                 data = json.load(f)
                 for name, monitor_data in data.items():
                     monitor = WebsiteMonitor(
-                        name=monitor_data['name'],
-                        url=monitor_data['url'],
-                        check_interval=monitor_data.get('check_interval', 60),
-                        timeout=monitor_data.get('timeout', 10)
+                        name=monitor_data["name"],
+                        url=monitor_data["url"],
+                        check_interval=monitor_data.get("check_interval", 60),
+                        timeout=monitor_data.get("timeout", 10)
                     )
-                    monitor.is_up = monitor_data.get('is_up', True)
+                    monitor.is_up = monitor_data.get("is_up", True)
                     self.monitors[name] = monitor
         except FileNotFoundError:
             pass
@@ -109,13 +108,13 @@ class UptimeBot(commands.Bot):
         data = {}
         for name, monitor in self.monitors.items():
             data[name] = {
-                'name': monitor.name,
-                'url': monitor.url,
-                'check_interval': monitor.check_interval,
-                'timeout': monitor.timeout,
-                'is_up': monitor.is_up
+                "name": monitor.name,
+                "url": monitor.url,
+                "check_interval": monitor.check_interval,
+                "timeout": monitor.timeout,
+                "is_up": monitor.is_up
             }
-        with open('monitors.json', 'w') as f:
+        with open("monitors.json", "w") as f:
             json.dump(data, f, indent=2)
             
     @tasks.loop(seconds=30)
@@ -137,7 +136,7 @@ class UptimeBot(commands.Bot):
         try:
             start_time = time.time()
             headers = {
-                'User-Agent': 'UptimeMonitorBot/1.0 (+https://github.com/yourrepo)'
+                "User-Agent": "UptimeMonitorBot/1.0 (+https://github.com/yourrepo)"
             }
             
             response = requests.get(
@@ -156,7 +155,7 @@ class UptimeBot(commands.Bot):
             else:
                 await self.handle_website_down(
                     monitor, 
-                    f"HTTP {response.status_code}"
+                    "HTTP {}".format(response.status_code)
                 )
                 
         except requests.exceptions.Timeout:
@@ -166,7 +165,7 @@ class UptimeBot(commands.Bot):
         except requests.exceptions.RequestException as e:
             await self.handle_website_down(monitor, str(e))
         except Exception as e:
-            await self.handle_website_down(monitor, f"Unexpected Error: {str(e)}")
+            await self.handle_website_down(monitor, "Unexpected Error: {}".format(str(e)))
             
     async def handle_website_up(self, monitor: WebsiteMonitor, response_time: float):
         """Handle website coming back up or staying up"""
@@ -189,7 +188,7 @@ class UptimeBot(commands.Bot):
             # Send recovery alert
             embed = discord.Embed(
                 title="✅ Website Recovered",
-                description=f"**{monitor.name}** is back online!",
+                description="**{}** is back online!".format(monitor.name),
                 color=discord.Color.green(),
                 timestamp=datetime.now()
             )
@@ -200,7 +199,7 @@ class UptimeBot(commands.Bot):
             )
             embed.add_field(
                 name="Response Time", 
-                value=f"{response_time:.2f}ms", 
+                value="{:.2f}ms".format(response_time), 
                 inline=True
             )
             if downtime_duration > 0:
@@ -227,7 +226,7 @@ class UptimeBot(commands.Bot):
             # Send downtime alert with @everyone
             embed = discord.Embed(
                 title="🚨 Website Down",
-                description=f"**{monitor.name}** is unreachable!",
+                description="**{}** is unreachable!".format(monitor.name),
                 color=discord.Color.red(),
                 timestamp=datetime.now()
             )
@@ -235,12 +234,12 @@ class UptimeBot(commands.Bot):
             embed.add_field(name="Error", value=error, inline=False)
             embed.add_field(
                 name="Failures", 
-                value=f"{monitor.consecutive_failures}/{monitor.failure_threshold}", 
+                value="{}/{}".format(monitor.consecutive_failures, monitor.failure_threshold), 
                 inline=True
             )
             
             # Add @everyone mention in content
-            content = f"{self.alert_role} **ALERT:** Website monitor detected downtime!"
+            content = "{} **ALERT:** Website monitor detected downtime!".format(self.alert_role)
             await self.send_alert(embed, content=content)
             
         monitor.add_status_record(False, error=error)
@@ -321,7 +320,7 @@ async def monitor_command(
         
         # Test the website immediately
         await interaction.response.send_message(
-            f"⏳ Adding monitor for **{name}**... testing URL...", 
+            "⏳ Adding monitor for **{}**... testing URL...".format(name), 
             ephemeral=True
         )
         
@@ -329,14 +328,16 @@ async def monitor_command(
         
         if monitor.is_up:
             await interaction.followup.send(
-                f"✅ Monitor added! **{name}** is responding correctly.\n"
-                f"Checks every {interval} seconds with {timeout}s timeout.",
+                "✅ Monitor added! **{}** is responding correctly.\\n"
+                "Checks every {} seconds with {}s timeout.".format(
+                    name, interval, timeout
+                ),
                 ephemeral=True
             )
         else:
             await interaction.followup.send(
-                f"⚠️ Monitor added but **{name}** appears to be down.\n"
-                f"Bot will continue monitoring and alert when it comes back up.",
+                "⚠️ Monitor added but **{}** appears to be down.\\n"
+                "Bot will continue monitoring and alert when it comes back up.".format(name),
                 ephemeral=True
             )
             
@@ -350,7 +351,7 @@ async def monitor_command(
             
         if name not in bot.monitors:
             await interaction.response.send_message(
-                f"❌ No monitor named '{name}' found!", 
+                "❌ No monitor named '{}' found!".format(name), 
                 ephemeral=True
             )
             return
@@ -359,7 +360,7 @@ async def monitor_command(
         bot.save_monitors()
         
         await interaction.response.send_message(
-            f"✅ Monitor **{name}** removed successfully!", 
+            "✅ Monitor **{}** removed successfully!".format(name), 
             ephemeral=True
         )
         
@@ -380,8 +381,8 @@ async def monitor_command(
         for name, monitor in bot.monitors.items():
             status = "🟢 UP" if monitor.is_up else "🔴 DOWN"
             embed.add_field(
-                name=f"{status} {name}",
-                value=f"URL: {monitor.url}\nInterval: {monitor.check_interval}s",
+                name="{} {}".format(status, name),
+                value="URL: {}\\nInterval: {}s".format(monitor.url, monitor.check_interval),
                 inline=False
             )
             
@@ -397,7 +398,7 @@ async def monitor_command(
             
         if name not in bot.monitors:
             await interaction.response.send_message(
-                f"❌ No monitor named '{name}' found!", 
+                "❌ No monitor named '{}' found!".format(name), 
                 ephemeral=True
             )
             return
@@ -405,7 +406,7 @@ async def monitor_command(
         monitor = bot.monitors[name]
         
         embed = discord.Embed(
-            title=f"📈 Status: {monitor.name}",
+            title="📈 Status: {}".format(monitor.name),
             color=discord.Color.green() if monitor.is_up else discord.Color.red(),
             timestamp=datetime.now()
         )
@@ -418,12 +419,12 @@ async def monitor_command(
         )
         embed.add_field(
             name="Avg Response Time", 
-            value=f"{monitor.get_avg_response_time():.2f}ms", 
+            value="{:.2f}ms".format(monitor.get_avg_response_time()), 
             inline=True
         )
         embed.add_field(
             name="Check Interval", 
-            value=f"{monitor.check_interval} seconds", 
+            value="{} seconds".format(monitor.check_interval), 
             inline=True
         )
         
@@ -445,9 +446,9 @@ async def monitor_command(
             recent = monitor.status_history[-5:]
             history_text = ""
             for record in recent:
-                ts = datetime.fromisoformat(record['timestamp'])
-                status = "🟢" if record['status'] else "🔴"
-                history_text += f"{status} {ts.strftime('%H:%M:%S')}\n"
+                ts = datetime.fromisoformat(record["timestamp"])
+                status = "🟢" if record["status"] else "🔴"
+                history_text += "{} {}\\n".format(status, ts.strftime("%H:%M:%S"))
             embed.add_field(name="Recent History", value=history_text, inline=False)
             
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -467,14 +468,14 @@ async def monitor_command(
         
         embed = discord.Embed(
             title="🎯 Uptime Monitoring Dashboard",
-            description=f"Monitoring **{total_sites}** websites",
+            description="Monitoring **{}** websites".format(total_sites),
             color=discord.Color.green() if down_sites == 0 else discord.Color.red(),
             timestamp=datetime.now()
         )
         
         embed.add_field(
             name="Overview",
-            value=f"🟢 Online: **{up_sites}**\n🔴 Offline: **{down_sites}**",
+            value="🟢 Online: **{}**\\n🔴 Offline: **{}**".format(up_sites, down_sites),
             inline=False
         )
         
@@ -483,7 +484,7 @@ async def monitor_command(
         for name, monitor in bot.monitors.items():
             status_emoji = "🟢" if monitor.is_up else "🔴"
             avg_time = monitor.get_avg_response_time()
-            sites_text += f"{status_emoji} **{name}** - {avg_time:.0f}ms\n"
+            sites_text += "{} **{}** - {:.0f}ms\\n".format(status_emoji, name, avg_time)
             
         if sites_text:
             embed.add_field(name="All Monitors", value=sites_text, inline=False)
@@ -493,7 +494,7 @@ async def monitor_command(
             uptime_pct = (up_sites / total_sites) * 100
             embed.add_field(
                 name="System Health",
-                value=f"**{uptime_pct:.1f}%** of services are online",
+                value="**{:.1f}%** of services are online".format(uptime_pct),
                 inline=False
             )
             
@@ -554,4 +555,4 @@ else:
 
 # Show a small clock so the user knows the page is "alive"
 st.divider()
-st.caption(f"Last page refresh: {time.strftime('%H:%M:%S')}")
+st.caption("Last page refresh: {}".format(time.strftime("%H:%M:%S")))
